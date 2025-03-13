@@ -10,7 +10,6 @@ Rather than directly comparing sequence, this is done by comparing locations of 
 * BED file listing syntenic blocks on genome2 -> genome1, including orientation
 * List of genes present in inverted regions
 * List of genes present in translocated regions
-* List of genes present in inverted translocated regions
 * Plot showing synteny between genomes (and identified inverted/translocated regions)
 
 ## Installation
