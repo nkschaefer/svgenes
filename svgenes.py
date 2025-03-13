@@ -20,15 +20,19 @@ def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--match_score", "-m", type=int, help='Match score', default=20)
     parser.add_argument("--skip_penalty", "-s", type=int, help="Skip penalty", default=20)
-    parser.add_argument('--break_penalty', '-b', type=int, help="Break penalty", default=1000)
-    parser.add_argument('--translocation_penalty', '-t', type=int, help="Translocation penalty", default=10000)
+    parser.add_argument('--break_penalty', '-b', type=int, help="Break penalty", default=100)
+    parser.add_argument('--translocation_penalty', '-t', type=int, help="Translocation penalty", default=100)
     parser.add_argument("--max_skip", "-S", type=int, help="Maximum number of genes that can be skipped at once", default=100)
     parser.add_argument("--anno1", "-1", help="Input annotation file 1 (gtf/gff3(.gz))", required=True)
     parser.add_argument("--anno2", "-2", help="Input annotation file 2 (gtf/gff3(.gz))", required=True)
-    parser.add_argument("--name1", "-n1", help="Gene name field in annotation file 1 (default = gene_name)", 
+    parser.add_argument("--gene_name1", "-n1", help="Gene name field in annotation file 1 (default = gene_name)", 
             default="gene_name", required=False)
-    parser.add_argument("--name2", "-n2", help="Gene name field in annotation file 2 (default = gene_name)", 
+    parser.add_argument("--gene_name2", "-n2", help="Gene name field in annotation file 2 (default = gene_name)", 
             default="gene_name", required=False)
+    parser.add_argument("--gene_id1", "-i1", help="Gene ID field in annotation file 1 (default = gene_id)",
+            default="gene_id", required=False)
+    parser.add_argument("--gene_id2", "-i2", help="Gene ID field in annotation file 2 (default = gene_id)",
+            default="gene_id", required=False)
     parser.add_argument("--output", "-o", help="Output file name prefix", required=True)
     parser.add_argument("--exclude_chr", "-e", help="Regex pattern (pipe separated) of sequence names to exclude (e.g. \
 chrUn|random)", required=False, default="chrUn|random|alt|qp|Scaffold|chrM|MT")
@@ -371,11 +375,14 @@ def is_gz(file):
     with open(file, 'rb') as test:
         return test.read(2) == b'\x1f\x8b'
 
-def get_genes(file, first_file=True, name_field="Name", exclude_chr=None, include_chr=None):
+def get_genes(file, first_file=True, name_field="gene_name", id_field="gene_id", 
+    exclude_chr=None, include_chr=None):
     if exclude_chr == "":
         exclude_chr = None
     if include_chr == "":
         include_chr = None
+    
+    gid2name = {}
 
     f = None
     gz = False
@@ -426,6 +433,8 @@ def get_genes(file, first_file=True, name_field="Name", exclude_chr=None, includ
                     else:
                         gff3 = False
                     first = False
+                gid = None
+                gname = None
                 for elt in vals.split(';'):
                     elt = elt.strip()
                     k = None
@@ -439,21 +448,26 @@ def get_genes(file, first_file=True, name_field="Name", exclude_chr=None, includ
                         if len(kv) == 2:
                             k, v = kv
                             v = v.strip('"')
+                    names_all.add(k)
                     if k == name_field:
                         chroms.append(dat[0])
                         starts.append(int(dat[3])-1)
                         ends.append(int(dat[4]))
                         genes.append(v)
-                    else:
-                        names_all.add(k)
+                        gname = v
+                    elif k == id_field:
+                        gid = v
+                
+                if gid is not None and gname is not None:
+                    gid2name[gid] = gname
     f.close()
     
     if len(chroms) == 0:
         if first_file:
-            print("ERROR: no genes found in --anno1/-1. Check --name1/-n1", file=sys.stderr)
+            print("ERROR: no genes found in --anno1/-1. Check --gene_name1/-n1", file=sys.stderr)
             exit(1)
         else:
-            print("ERROR: no genes found in --anno2/-2. Check --name2/-n2", file=sys.stderr)
+            print("ERROR: no genes found in --anno2/-2. Check --gene_name2/-n2", file=sys.stderr)
         
         print("Candidate fields:", file=sys.stderr)
         for n in sorted(list(names_all)):
@@ -466,7 +480,7 @@ def get_genes(file, first_file=True, name_field="Name", exclude_chr=None, includ
     else:
         dat = {"chrom2": chroms, "start2": starts, "end2": ends, "gene": genes}
 
-    return pd.DataFrame(dat)
+    return (pd.DataFrame(dat), gid2name)
 
 def get_chromlens(fai, excl_chr=None, incl_chr=None):
     if excl_chr == "":
@@ -718,6 +732,10 @@ def write_genelists(genes, svs, output_prefix):
         df = pd.DataFrame({'gene': g_tx['gene']})
         df = df.sort_values(['gene'])
         df.to_csv("{}.trans_genes.txt".format(output_prefix), sep='\t', index=False, header=False)
+    
+    # Write out set of all genes (to use as background in enrichment tests)
+    df = pd.DataFrame({'gene': genes['gene']}).sort_values(['gene'])
+    df.to_csv('{}.all_genes.txt'.format(output_prefix), sep='\t', index=False, header=False)
 
 def main(args):
     options = parse_args()
@@ -729,10 +747,12 @@ def main(args):
             options.exclude_chr += ')'
     
     # Parse annotation files
-    df1 = get_genes(options.anno1, first_file=True, name_field=options.name1,
-            exclude_chr=options.exclude_chr, include_chr=options.include_chr)
-    df2 = get_genes(options.anno2, first_file=False, name_field=options.name2,
-            exclude_chr=options.exclude_chr, include_chr=options.include_chr)
+    df1, gid1 = get_genes(options.anno1, first_file=True, name_field=options.gene_name1,
+            id_field=options.gene_id1, exclude_chr=options.exclude_chr, 
+            include_chr=options.include_chr)
+    df2, gid2 = get_genes(options.anno2, first_file=False, name_field=options.gene_name2,
+            id_field=options.gene_id2, exclude_chr=options.exclude_chr, 
+            include_chr=options.include_chr)
     
     # Merge together to compare position by gene
     df = df1.merge(df2, left_on='gene', right_on='gene')
