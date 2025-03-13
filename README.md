@@ -15,7 +15,7 @@ Rather than directly comparing sequence, this is done by comparing locations of 
 
 ## Installation
 ```
-conda create --file=svgenes.yml
+conda env create --file=svgenes.yml
 ```
 
 ## Running
