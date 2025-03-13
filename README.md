@@ -1,7 +1,7 @@
 # svgenes
 This program finds syntenic regions between two genomes, using genome annotations instead of aligning sequences. It maps confident inversions and translocations, plots them, and writes them to BED files, also writing lists of genes in inverted and translocated regions.
 
-<img src="human_gorilla.png" alt="svgenes" width=600, height=600 /> 
+<img src="human_chimp.png" alt="svgenes" width=600, height=600 /> 
 
 ### Outputs
 * BED file listing syntenic blocks on genome1 -> genome2, including orientation
