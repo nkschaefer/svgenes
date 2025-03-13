@@ -1,0 +1,10 @@
+name: svgenes
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - pandas
+  - numpy
+  - pyranges
+  - tqdm
+  - matplotlib
