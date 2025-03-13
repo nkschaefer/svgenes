@@ -1,7 +1,7 @@
 # svgenes
 This program finds syntenic regions between two genomes, explicitly noting inversions, chromosomal translocations, and inverted translocations.
 
-<img src="human_gorilla.png" alt="svgenes" width=500, height=500 /> 
+<img src="human_gorilla.png" alt="svgenes" width=600, height=600 /> 
 
 Rather than directly comparing sequence, this is done by comparing locations of genes.
 
