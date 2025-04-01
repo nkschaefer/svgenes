@@ -12,10 +12,14 @@ import re
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import matplotlib.collections as mc
+import random
 """
 Find SVs segregating between two genomes, using gene order
 """
 
+"""
+Interpret command-line arguments.
+"""
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--match_score", "-m", type=int, help='Match score', default=20)
@@ -46,8 +50,15 @@ This is required to make plot-friendly data, but not otherwise.", required=False
         required=False, default="Species 1")
     parser.add_argument("--species2", "-s2", help="Name of species 2 (to be added to plot axis label)",
         required=False, default="Species 2")
+    parser.add_argument("--enrichment", "-E", help="Provide a number of random samples for enrichment testing, \
+if you wish to test for overrepresentation of genes in inverted regions. e.g. 1000. Defalt = no enrichment testing.",
+        required=False, default=None, type=int)
     return parser.parse_args()
 
+"""
+Score emission function for HMM state where both sequences
+are moving in the same direction.
+"""
 def forward_emit(diff, match_score):
     if diff == 0:
         return 0
@@ -57,6 +68,10 @@ def forward_emit(diff, match_score):
     else:
         return match_score*diff
 
+"""
+Score emission function for HMM state where sequences are
+moving in opposite directions.
+"""
 def rev_emit(diff, match_score):
     if diff == 0:
         return 0
@@ -66,6 +81,10 @@ def rev_emit(diff, match_score):
         #return match_score + diff
         return -match_score/diff
 
+"""
+Runs the HMM to find the likeliest path along a genome, in aligned
+sequence blocks.
+"""
 def find_path(df, match_score, skip_penalty, 
     break_penalty, translocation_penalty, max_skip):
     # Get sizes of chroms
@@ -287,6 +306,11 @@ def find_path(df, match_score, skip_penalty,
     
     return (segs1, segs2, dirs)
 
+"""
+After running the HMM on species1 coordinates, and then running again
+on species2 coordinates, takes the results of both runs and finds a
+consensus set of mappings of sequence blocks.
+"""
 def reconcile_dfs(segs1, segs1b, segs2, segs2b, dirs, dirsb):
 
     colnames = ['Chromosome', 'Start', 'End']
@@ -313,13 +337,25 @@ def reconcile_dfs(segs1, segs1b, segs2, segs2b, dirs, dirsb):
     gr2a = pr.PyRanges(s2a)
     gr2b = pr.PyRanges(s2b)
     
-    gr_s1 = gr1a.join(gr1b, strandedness='same').df.rename({"Chromosome": "chrom1a", "Start": "start1a", "End": "end1a", "Strand":
-                                                           "orientation1a", "id": "ida", "Start_b": "start1b", "End_b": "end1b",
-                                                           "Strand_b": "orientation1b", "id_b": "idb"}, axis=1)
+    gr_s1 = gr1a.join(gr1b, strandedness='same').df.rename({"Chromosome": "chrom1a", 
+                                                            "Start": "start1a", 
+                                                            "End": "end1a", 
+                                                            "Strand": "orientation1a", 
+                                                            "id": "ida", 
+                                                            "Start_b": "start1b", 
+                                                            "End_b": "end1b",
+                                                           "Strand_b": "orientation1b", 
+                                                            "id_b": "idb"}, axis=1)
 
-    gr_s2 = gr2a.join(gr2b, strandedness='same').df.rename({"Chromosome": "chrom2a", "Start": "start2a", "End": "end2a", "Strand":
-                                                           "orientation2a", "id": "ida", "Start_b": "start2b", "End_b": "end2b",
-                                                           "Strand_b": "orientation2b", "id_b": "idb"}, axis=1)
+    gr_s2 = gr2a.join(gr2b, strandedness='same').df.rename({"Chromosome": "chrom2a", 
+                                                            "Start": "start2a", 
+                                                            "End": "end2a", 
+                                                            "Strand": "orientation2a", 
+                                                            "id": "ida", 
+                                                            "Start_b": "start2b", 
+                                                            "End_b": "end2b",
+                                                            "Strand_b": "orientation2b", 
+                                                            "id_b": "idb"}, axis=1)
     
     gr_s1['jacc'] = gr_s1.apply(lambda x: 2*(min(x['end1a'], x['end1b']) \
             - max(x['start1a'], x['start1b']))/(x['end1a'] - x['start1a'] + x['end1b'] - x['start1b']), axis=1)
@@ -332,8 +368,6 @@ def reconcile_dfs(segs1, segs1b, segs2, segs2b, dirs, dirsb):
     mj2 = grboth.groupby('idb', observed=True)['jsum'].agg('max').reset_index().rename({'jsum': 'maxjaccb'}, axis=1)
     grboth = grboth.merge(mj1).merge(mj2)
     grboth = grboth.loc[(grboth['jsum'] == grboth['maxjacca']) & (grboth['jsum'] == grboth['maxjaccb']),:]
-    
-    grboth.to_csv('test.tsv', sep='\t')
     
     grboth['len1A'] = grboth['end1a'] - grboth['start1a']
     grboth['len1B'] = grboth['end1b'] - grboth['start1b']
@@ -371,19 +405,15 @@ def reconcile_dfs(segs1, segs1b, segs2, segs2b, dirs, dirsb):
     
     return species1
 
+"""
+Check whether a file is gzipped.
+"""
 def is_gz(file):
     with open(file, 'rb') as test:
         return test.read(2) == b'\x1f\x8b'
 
-def get_genes(file, first_file=True, name_field="gene_name", id_field="gene_id", 
-    exclude_chr=None, include_chr=None):
-    if exclude_chr == "":
-        exclude_chr = None
-    if include_chr == "":
-        include_chr = None
-    
-    gid2name = {}
-
+def get_gz_lines(file, name_field, id_field, exclude_chr=None, include_chr=None, 
+                names_all=None):
     f = None
     gz = False
     if is_gz(file):
@@ -392,11 +422,6 @@ def get_genes(file, first_file=True, name_field="gene_name", id_field="gene_id",
     else:
         f = open(file)
     
-    chroms = []
-    starts = []
-    ends = []
-    genes = []
-
     first = True
     gff3 = False
     
@@ -406,13 +431,6 @@ def get_genes(file, first_file=True, name_field="gene_name", id_field="gene_id",
     incl_reg = None
     if include_chr is not None:
         incl_reg = re.compile(include_chr)
-
-    if first_file:
-        print("Load GTF/GFF3 file 1...", file=sys.stderr)
-    else:
-        print("Load GTF/GFF3 file 2...", file=sys.stderr)
-    
-    names_all = set([])
 
     for line in tqdm(f):
         if gz:
@@ -448,20 +466,112 @@ def get_genes(file, first_file=True, name_field="gene_name", id_field="gene_id",
                         if len(kv) == 2:
                             k, v = kv
                             v = v.strip('"')
-                    names_all.add(k)
+                    if names_all is not None:
+                        names_all.add(k)
                     if k == name_field:
-                        chroms.append(dat[0])
-                        starts.append(int(dat[3])-1)
-                        ends.append(int(dat[4]))
-                        genes.append(v)
                         gname = v
                     elif k == id_field:
                         gid = v
                 
                 if gid is not None and gname is not None:
-                    gid2name[gid] = gname
+                    yield {'chrom': dat[0], 'start': int(dat[3])-1, 
+                           'end': int(dat[4]), 'id': gid, 'name': gname}
     f.close()
+
+def get_gz_lines2(file, name_field, id_field, exclude_chr=None, include_chr=None, 
+                names_all=None):
+    f = None
+    gz = False
+    if is_gz(file):
+        f = gzip.open(file)
+        gz = True
+    else:
+        f = open(file)
     
+    first = True
+    gff3 = False
+    
+    excl_reg = None
+    if exclude_chr is not None:
+        excl_reg = re.compile(exclude_chr)
+    incl_reg = None
+    if include_chr is not None:
+        incl_reg = re.compile(include_chr)
+
+    for line in tqdm(f):
+        if gz:
+            line = line.decode().rstrip()
+        else:
+            line = line.rstrip()
+        if line[0] != "#":
+            dat = line.split('\t')
+            if excl_reg is not None and excl_reg.search(dat[0]):
+                continue
+            if incl_reg is not None and not incl_reg.search(dat[0]):
+                continue
+            vals = dat[8]
+            if first:
+                if '=' in vals:
+                    gff3 = True
+                else:
+                    gff3 = False
+                first = False
+            gid = None
+            gname = None
+            for elt in vals.split(';'):
+                elt = elt.strip()
+                k = None
+                v = None
+                if gff3:
+                    kv = elt.split('=')
+                    if len(kv) == 2:
+                        k, v = kv
+                else:
+                    kv = elt.split()
+                    if len(kv) == 2:
+                        k, v = kv
+                        v = v.strip('"')
+                if names_all is not None:
+                    names_all.add(k)
+                if k == name_field:
+                    gname = v
+                elif k == id_field:
+                    gid = v
+            
+            yield {'line': line, 'id': gid, 'name': gname}
+    f.close()
+
+"""
+Extract genes and coordinates from a GTF/GFF3, optionally gzipped.
+"""
+def get_genes(file, first_file=True, name_field="gene_name", id_field="gene_id", 
+    exclude_chr=None, include_chr=None):
+    if exclude_chr == "":
+        exclude_chr = None
+    if include_chr == "":
+        include_chr = None
+    
+    gid2name = {}
+
+    chroms = []
+    starts = []
+    ends = []
+    genes = []
+
+    if first_file:
+        print("Load GTF/GFF3 file 1...", file=sys.stderr)
+    else:
+        print("Load GTF/GFF3 file 2...", file=sys.stderr)
+    
+    names_all = set([])
+    for entry in get_gz_lines(file, name_field, id_field, exclude_chr, include_chr,
+        names_all):
+        chroms.append(entry['chrom'])
+        starts.append(entry['start'])
+        ends.append(entry['end'])
+        genes.append(entry['name'])
+        gid2name[entry['id']] = entry['name']
+
     if len(chroms) == 0:
         if first_file:
             print("ERROR: no genes found in --anno1/-1. Check --gene_name1/-n1", file=sys.stderr)
@@ -482,6 +592,9 @@ def get_genes(file, first_file=True, name_field="gene_name", id_field="gene_id",
 
     return (pd.DataFrame(dat), gid2name)
 
+"""
+Extract chromosome/sequence lengths from a fasta index (fai).
+"""
 def get_chromlens(fai, excl_chr=None, incl_chr=None):
     if excl_chr == "":
         excl_chr = None
@@ -509,6 +622,9 @@ def get_chromlens(fai, excl_chr=None, incl_chr=None):
     f.close()
     return (chroms, lens)
 
+"""
+Plot rectangles marking inversions/translocations before plotting gene coordinates.
+"""
 def add_rectangles(ax, df, col, maxX, maxY):
     for _, row in df.iterrows():
         rect = patches.Rectangle((row['chrstart1'] + row['start1'], 0),
@@ -536,6 +652,15 @@ def add_rectangles(ax, df, col, maxX, maxY):
                                alpha=1)
         ax.add_patch(r2)
 
+"""
+From HMM output, match up chromosomes in species1 and species2, determining which are
+homologous. For each chrom pair, the Jaccard index is computed as 
+2*(intersecting bases)/(species1 bases + species2 bases).
+Then, compute the maximum Jaccard index per species1 chromosome and the maximum per
+species2 chromosome.
+Chrom pairs that produce the maximum Jaccard index for the species1 chrom as well
+as the species2 chrom are chosen as homologues.
+"""
 def get_homologous_chroms(species):
     species1 = species.copy()
 
@@ -558,6 +683,20 @@ def get_homologous_chroms(species):
     jacc['homologous'] = 1
     return jacc
 
+"""
+Used as a pd.DataFrame.apply() function by the reconcile_dfs() function.
+After running the HMM of species2 coords on species1 coords, then also
+running it on species1 coords on species2 coords, need to reconcile the
+output of both.
+We find all sets of (species1a, species2a), (species1b, species2b) 
+intervals, where a denotes the first run and b denotes the second run,
+and species1a/species1b intersect, and species2a/species2b also intersect.
+We then need to choose a single (species1, species2) interval pair as
+consensus.
+
+For this, we choose the (species1, species2) interval where the length
+on species1 is the closest to the length on species2.
+"""
 def findmin(x):
     keys = {'len1A': ('start1a', 'end1a'),
             'len1B': ('start1b', 'end1b'),
@@ -588,10 +727,11 @@ def findmin(x):
     
     return [x[keys[min1][0]], x[keys[min1][1]], x[keys[min2][0]], x[keys[min2][1]]]
 
-def make_plot(species1, df, fai1, fai2, exclude_chr, include_chr, species1name, species2name, output):
-    
-    chroms1, lens1 = get_chromlens(fai1, exclude_chr, include_chr)
-    chroms2, lens2 = get_chromlens(fai2, exclude_chr, include_chr)
+"""
+Create plot at the end.
+"""
+def make_plot(species1, df, chroms1, lens1, chroms2, lens2, 
+    species1name, species2name, output):
     
     # Make plottable data.
     l1df = pd.DataFrame({'chrom1': chroms1, 'len1': lens1})
@@ -633,7 +773,9 @@ def make_plot(species1, df, fai1, fai2, exclude_chr, include_chr, species1name, 
     l1df['chrstart1'] = l1df['len1'].cumsum().shift(1, fill_value=0)
     l2df['chrstart2'] = l2df['len2'].cumsum().shift(1, fill_value=0)
     
-    df = df.merge(l1df, left_on='chrom1', right_on='chrom1').merge(l2df, left_on='chrom2', right_on='chrom2')
+    df = df.merge(l1df, left_on='chrom1', right_on='chrom1').merge(l2df, 
+                                                                    left_on='chrom2', 
+                                                                   right_on='chrom2')
     
     l1df['even'] = range(0, l1df.shape[0])
     l1df['even'] = l1df['even'] % 2
@@ -660,7 +802,8 @@ def make_plot(species1, df, fai1, fai2, exclude_chr, include_chr, species1name, 
     species1 = species1.merge(l1df, left_on='chrom1', right_on='chrom1')
     species1 = species1.merge(l2df, left_on='chrom2', right_on='chrom2')
     
-    species1 = species1.merge(jacc, left_on=['chrom1', 'chrom2'], right_on=['chrom1', 'chrom2'], how='left')
+    species1 = species1.merge(jacc, left_on=['chrom1', 'chrom2'], 
+                              right_on=['chrom1', 'chrom2'], how='left')
     species1.loc[species1['homologous'].isna(),'homologous'] = 0
     
     invs = species1.loc[(species1['homologous'] == 1) & (species1['orientation'] == '-'),:]
@@ -708,7 +851,12 @@ def make_plot(species1, df, fai1, fai2, exclude_chr, include_chr, species1name, 
     ax.set_yticklabels([])
     
     plt.savefig("{}.pdf".format(output), format='pdf')
+    
+    return (l1df, l2df)
 
+"""
+Save lists of genes as text files.
+"""
 def write_genelists(genes, svs, output_prefix):
     jacc = get_homologous_chroms(svs)
     
@@ -717,25 +865,176 @@ def write_genelists(genes, svs, output_prefix):
 
     svcpy = svs.copy().merge(jacc, how='left').drop(['chrom2', 'start2', 'end2'], axis=1).\
             rename({"chrom1": "Chromosome", "start1": "Start", "end1": "End"}, axis=1)
+    
     invs = pr.PyRanges(svcpy.loc[(svcpy['homologous'] == 1) & (svcpy['orientation'] == '-'),:]\
-            .drop(['orientation'], axis=1).rename({"chrom1": "Chromosome", "start1": "Start", "end1": "End"}))
+            .drop(['orientation'], axis=1).rename({"chrom1": "Chromosome", 
+                                                   "start1": "Start", "end1": "End"}))
     tx = pr.PyRanges(svcpy.loc[svcpy['homologous'] == 0,:].drop(['orientation'], axis=1))
     
     g_inv = gcpy.join(invs).df
     g_tx = gcpy.join(tx).df
     
     if g_inv.shape[0] > 0:
-        df = pd.DataFrame({'gene': g_inv['gene']})
+        #df = pd.DataFrame({'gene': g_inv['gene']})
+        df = g_inv.drop(['homologous'], axis=1)
         df = df.sort_values(['gene'])
         df.to_csv("{}.inv_genes.txt".format(output_prefix), sep='\t', index=False, header=False)
     if g_tx.shape[0] > 0:
-        df = pd.DataFrame({'gene': g_tx['gene']})
+        #df = pd.DataFrame({'gene': g_tx['gene']})
+        df = g_tx.drop(['homologous'], axis=1)
         df = df.sort_values(['gene'])
         df.to_csv("{}.trans_genes.txt".format(output_prefix), sep='\t', index=False, header=False)
     
     # Write out set of all genes (to use as background in enrichment tests)
-    df = pd.DataFrame({'gene': genes['gene']}).sort_values(['gene'])
+    #df = pd.DataFrame({'gene': genes['gene']}).sort_values(['gene'])
+    df = genes.sort_values(['chrom1', 'start1', 'end1'])
     df.to_csv('{}.all_genes.txt'.format(output_prefix), sep='\t', index=False, header=False)
+
+def samp_region(genes_gr, l1df, size, totsize):
+    success = False
+    while not success:
+        base = int(round(random.random() * totsize))
+        endbase = base + size
+        chrom = l1df.loc[(l1df['chrstart1'] <= base) & (l1df['chrstart1'] + l1df['len1'] > endbase),:]
+        if chrom.shape[0] == 0:
+            continue
+        else:
+            base_chrom = base - chrom['chrstart1'].to_list()[0]
+            endbase_chrom = base_chrom + size
+            gr = pr.PyRanges(pd.DataFrame({'Chromosome': chrom['chrom1'], 
+                              'Start': base_chrom, 'End': endbase_chrom}, index=[0]))
+            inter = gr.join(genes_gr).df
+            success = True
+            if inter.shape[0] > 0:
+                return len(inter['gene'].unique())
+            else:
+                return 0
+
+def enrich_test(species1, l1df, l2df, df, nsamp):
+    invs = species1.loc[(species1['orientation'] == '-'),:]
+    genes_gr = pr.PyRanges(pd.DataFrame({'Chromosome': df['chrom1'],
+                                         'Start': df['start1'],
+                                         'End': df['end1'],
+                                         'gene': df['gene']}))
+    
+    totsize = l1df['chrstart1'][l1df.shape[0]-1] + l1df['len1'][l1df.shape[0]-1]
+    
+    ngenes = []
+    mean_genes_trials = []
+    enrich_genes_p = []
+    for _, row in invs.iterrows():
+        size = row['end1'] - row['start1']
+        gr1 = pr.PyRanges(pd.DataFrame({'Chromosome': row['chrom1'],
+                                        'Start': row['start1'],
+                                        'End': row['end1']}, index=[0]))
+        ngenes_true = len(gr1.join(genes_gr).df['gene'].unique())
+        ngenes.append(ngenes_true)
+        nmore = 0
+        trials = nsamp
+        nums = []
+        for i in tqdm(range(0, trials)):
+            ngenes_trial = samp_region(genes_gr, l1df, size, totsize)
+            nums.append(ngenes_trial)
+            if ngenes_trial >= ngenes_true:
+                nmore += 1
+        mean_genes_trials.append(np.mean(np.array(nums)))
+        enrich_genes_p.append(nmore/trials)
+    
+    invs.loc[:,'ngenes'] = ngenes_true
+    invs.loc[:,'mean_ngenes_trials'] = mean_genes_trials
+    invs.loc[:,'enrich_genes_p'] = enrich_genes_p
+    
+    return invs
+
+def filter_annotations(outbase,
+                       species1, 
+                       species2, 
+                       gene_df, 
+                       annofile1, 
+                       gid1, 
+                       annofile2, 
+                       gid2,
+                       name_field1,
+                       id_field1,
+                       name_field2,
+                       id_field2,
+                       exclude_chr,
+                       include_chr):
+    
+    g1 = pr.PyRanges(gene_df.copy().drop(['chrom2', 'start2', 'end2'], axis=1)\
+        .rename({"chrom1": "Chromosome", "start1": "Start", "end1": "End"}, axis=1))
+    g2 = pr.PyRanges(gene_df.copy().drop(['chrom1', 'start1', 'end1'], axis=1)\
+        .rename({"chrom2": "Chromosome", "start2": "Start", "end2": "End"}, axis=1))
+    
+    species1['id'] = range(0, species1.shape[0])
+        
+    s1 = pr.PyRanges(species1.copy().drop(['chrom2', 'start2', 'end2', 'orientation'], axis=1)\
+            .rename({"chrom1": "Chromosome", "start1": "Start", "end1": "End"}, axis=1))
+    s2 = pr.PyRanges(species1.copy().drop(['chrom1', 'start1', 'end1', 'orientation'], axis=1)\
+            .rename({"chrom2": "Chromosome", "start2": "Start", "end2": "End"}, axis=1))
+    
+    gs1 = g1.join(s1).df.drop(['Chromosome', 'Start', 'End', 'Start_b', 'End_b'], axis=1)
+    gs2 = g2.join(s2).df.drop(['Chromosome', 'Start', 'End', 'Start_b', 'End_b'], axis=1)
+    
+    gsmerge = gs1.merge(gs2, left_on='gene', right_on='gene')
+    gsmerge = gsmerge.merge(species1.drop(['start1', 'end1', 
+                                           'start2', 'end2', 'orientation'],
+                                          axis=1), left_on='id_x', right_on='id').drop(
+                                                  ['id'], axis=1).rename({
+                                                          'chrom1': "chr1x",
+                                                          'chrom2': "chr2x"
+                                                          }, axis=1)
+    gsmerge = gsmerge.merge(species1.drop(['start2', 'end2',
+                                           'start1', 'end1', 'orientation'],
+                                          axis=1), left_on='id_y', right_on='id').drop(
+                                                  ['id'], axis=1).rename({
+                                                      'chrom1': "chr1y",
+                                                      'chrom2': "chr2y"
+                                                      }, axis=1)
+    gkeep = set(gsmerge.loc[(gsmerge['id_x'] == gsmerge['id_y']) | 
+                            ((gsmerge['chr1x'] == gsmerge['chr1y']) &
+                              (gsmerge['chr2x'] == gsmerge['chr2y'])),'gene'].unique())
+    g_all = set(gsmerge['gene'].unique())
+    g_rm = g_all.difference(gkeep)
+    print("Remove genes ({}):".format(len(g_rm)), file=sys.stderr)
+    for g in sorted(list(g_rm)):
+        print(g, file=sys.stderr)
+    
+    annobase1 = annofile1.split('/')[-1]
+    m = re.match(r'(.+)\.(gff|gff3|gtf)(.gz)?', annobase1)
+    if m:
+        annobase1 = m.group(1)
+    annobase2 = annofile2.split('/')[-1]
+    m = re.match(r'(.+)\.(gff|gff3|gtf)(.gz)?', annobase2)
+    if m:
+        annobase2 = m.group(1)
+
+    f1 = gzip.open('{}.{}.gz'.format(outbase, annobase1), 'wt')
+    f1r = gzip.open('{}.removed.{}.gz'.format(outbase, annobase1), 'wt')
+    print("Filter annotation 1...", file=sys.stderr)
+    for entry in get_gz_lines2(annofile1, name_field1, id_field1, exclude_chr,
+                              include_chr):
+        if entry['id'] is not None and entry['id'] in gid1 and \
+            gid1[entry['id']] in gkeep:
+                print(entry['line'], file=f1)
+        else:
+            print(entry['line'], file=f1r)
+    f1.close()
+    f1r.close()
+
+    print("Filter annotation 2...", file=sys.stderr)
+    f2 = gzip.open('{}.{}.gz'.format(outbase, annobase2), 'wt')
+    f2r = gzip.open('{}.removed.{}.gz'.format(outbase, annobase2), 'wt')
+    for entry in get_gz_lines2(annofile2, name_field2, id_field2, exclude_chr,
+                               include_chr):
+        if entry['id'] is not None and entry['id'] in gid2 and \
+            gid2[entry['id']] in gkeep:
+                print(entry['line'], file=f2)
+        else:
+            print(entry['line'], file=f2r)
+
+    f2.close()
+    f2r.close()
 
 def main(args):
     options = parse_args()
@@ -779,8 +1078,10 @@ def main(args):
                            'chrom1': species1['chrom1'], 'start1': species1['start1'],
                            'end1': species1['end1']})
 
-    species1.to_csv('{}.{}.bed'.format(options.output, "_".join(options.species1.split(' '))), index=False, sep='\t')
-    species2.to_csv('{}.{}.bed'.format(options.output, "_".join(options.species2.split(' '))), index=False, sep='\t')
+    species1.to_csv('{}.{}.bed'.format(options.output, "_".join(options.species1.split(' '))), 
+        header=False, index=False, sep='\t')
+    species2.to_csv('{}.{}.bed'.format(options.output, "_".join(options.species2.split(' '))), 
+        header=False, index=False, sep='\t')
     
     # Create lists of genes
     write_genelists(df, species1, options.output)
@@ -788,9 +1089,23 @@ def main(args):
     # Check whether chrom lengths were provided, which allows plotting
     if options.fai1 is not None and options.fai2 is not None:
         print("Make plot...", file=sys.stderr)
+        chroms1, lens1 = get_chromlens(options.fai1, options.exclude_chr, options.include_chr)
+        chroms2, lens2 = get_chromlens(options.fai2, options.exclude_chr, options.include_chr)
+        l1df, l2df = make_plot(species1, df, chroms1, lens1, chroms2, lens2, 
+            options.species1, options.species2, options.output)
+        
+        if options.enrichment is not None and options.enrichment > 0:
+            print("Enrichment testing...", file=sys.stderr)
+            inv_enrich, trans_enrich = enrich_test(species1, l1df, l2df, 
+                                                   df, options.enrichment)
     
-        make_plot(species1, df, options.fai1, options.fai2, 
-            options.exclude_chr, options.include_chr, options.species1, options.species2, options.output)
+    # Filter annotations to exclude genes mapped to wrong regions
+    print("Filtering annotations...", file=sys.stderr)
+    filter_annotations(options.output, species1, species2, df, 
+                       options.anno1, gid1, options.anno2, gid2,
+                       options.gene_name1, options.gene_id1,
+                       options.gene_name2, options.gene_id2,
+                       options.exclude_chr, options.include_chr)
 
 if __name__ == '__main__':
     sys.exit(main(sys.argv))
