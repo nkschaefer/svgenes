@@ -53,6 +53,9 @@ This is required to make plot-friendly data, but not otherwise.", required=False
     parser.add_argument("--enrichment", "-E", help="Provide a number of random samples for enrichment testing, \
 if you wish to test for overrepresentation of genes in inverted regions. e.g. 1000. Defalt = no enrichment testing.",
         required=False, default=None, type=int)
+    parser.add_argument("--nofilt", "-nf", help="Make BED files and plot, then quit without filtering \
+annotations. Default behavior is to filter both annotations to remove genes not along the expected \
+synteny path", action="store_true")
     parser.add_argument("--filt_files", "-F", help="Write out separate files for each set of removed \
 genes, to attempt to rescue later", action='store_true')
     return parser.parse_args()
@@ -1053,7 +1056,8 @@ def filter_annotations(outbase,
                 print(entry['line'], file=f1)
         else:
             print(entry['line'], file=f1r)
-            f1rm.add(entry['name'])
+            if entry['name'] is not None:
+                f1rm.add(entry['name'])
     f1.close()
     f1r.close()
     for rm in sorted(list(f1rm)):
@@ -1072,7 +1076,8 @@ def filter_annotations(outbase,
                 print(entry['line'], file=f2)
         else:
             print(entry['line'], file=f2r)
-            f2rm.add(entry['name'])
+            if entry['name'] is not None:
+                f2rm.add(entry['name'])
             if filt_files and entry['name'] in g2seg1:
                 # Find which output file this belongs to
                 seg = g2seg1[entry['name']]
@@ -1146,19 +1151,19 @@ def main(args):
         l1df, l2df = make_plot(species1, df, chroms1, lens1, chroms2, lens2, 
             options.species1, options.species2, options.output)
         
-        if options.enrichment is not None and options.enrichment > 0:
+        if not options.nofilt and options.enrichment is not None and options.enrichment > 0:
             print("Enrichment testing...", file=sys.stderr)
             inv_enrich, trans_enrich = enrich_test(species1, l1df, l2df, 
                                                    df, options.enrichment)
-    
-    # Filter annotations to exclude genes mapped to wrong regions
-    print("Filtering annotations...", file=sys.stderr)
-    filter_annotations(options.output, species1, species2, df, 
-                       options.anno1, gid1, options.anno2, gid2,
-                       options.gene_name1, options.gene_id1,
-                       options.gene_name2, options.gene_id2,
-                       options.exclude_chr, options.include_chr,
-                       options.filt_files)
+    if not options.nofilt:
+        # Filter annotations to exclude genes mapped to wrong regions
+        print("Filtering annotations...", file=sys.stderr)
+        filter_annotations(options.output, species1, species2, df, 
+                           options.anno1, gid1, options.anno2, gid2,
+                           options.gene_name1, options.gene_id1,
+                           options.gene_name2, options.gene_id2,
+                           options.exclude_chr, options.include_chr,
+                           options.filt_files)
 
 if __name__ == '__main__':
     sys.exit(main(sys.argv))
