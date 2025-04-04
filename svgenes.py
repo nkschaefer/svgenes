@@ -50,6 +50,10 @@ This is required to make plot-friendly data, but not otherwise.", required=False
         required=False, default="Species 1")
     parser.add_argument("--species2", "-s2", help="Name of species 2 (to be added to plot axis label)",
         required=False, default="Species 2")
+    parser.add_argument("--mito1", "-m1", help="Name of mitochondrial sequence in species 1 (will allow \
+these genes to pass through without filtering)", required=False, default='chrM')
+    parser.add_argument("--mito2", "-m2", help="Name of mitochondrial sequence in species 2 (will allow \
+these genes to pass through without filtering)", required=False, default='chrM')
     parser.add_argument("--enrichment", "-E", help="Provide a number of random samples for enrichment testing, \
 if you wish to test for overrepresentation of genes in inverted regions. e.g. 1000. Defalt = no enrichment testing.",
         required=False, default=None, type=int)
@@ -543,7 +547,7 @@ def get_gz_lines2(file, name_field, id_field, exclude_chr=None, include_chr=None
                 elif k == id_field:
                     gid = v
             
-            yield {'line': line, 'id': gid, 'name': gname}
+            yield {'line': line, 'id': gid, 'name': gname, 'seq': dat[0]}
     f.close()
 
 """
@@ -965,6 +969,8 @@ def filter_annotations(outbase,
                        id_field2,
                        exclude_chr,
                        include_chr,
+                       mito1,
+                       mito2,
                        filt_files=False):
     
     g1 = pr.PyRanges(gene_df.copy().drop(['chrom2', 'start2', 'end2'], axis=1)\
@@ -1051,8 +1057,9 @@ def filter_annotations(outbase,
     f1rm = set([])
     for entry in get_gz_lines2(annofile1, name_field1, id_field1, exclude_chr,
                               include_chr):
-        if entry['id'] is not None and entry['id'] in gid1 and \
-            gid1[entry['id']] in gkeep:
+        if entry['seq'] == mito1 or (
+            entry['id'] is not None and entry['id'] in gid1 and \
+            gid1[entry['id']] in gkeep ):
                 print(entry['line'], file=f1)
         else:
             print(entry['line'], file=f1r)
@@ -1071,8 +1078,9 @@ def filter_annotations(outbase,
     f2rm = set([])
     for entry in get_gz_lines2(annofile2, name_field2, id_field2, exclude_chr,
                                include_chr):
-        if entry['id'] is not None and entry['id'] in gid2 and \
-            gid2[entry['id']] in gkeep:
+        if entry['seq'] == mito2 or (
+            entry['id'] is not None and entry['id'] in gid2 and \
+            gid2[entry['id']] in gkeep ):
                 print(entry['line'], file=f2)
         else:
             print(entry['line'], file=f2r)
@@ -1113,14 +1121,14 @@ def main(args):
     # Merge together to compare position by gene
     df = df1.merge(df2, left_on='gene', right_on='gene')
     
-    # Find Viterbi path through species1-centric HMM
+    # Find path through species1-centric HMM
     segs1, segs2, dirs = find_path(df, options.match_score, options.skip_penalty,
             options.break_penalty, options.translocation_penalty, options.max_skip)
 
     df2 = df.copy().rename({'chrom1': 'chrom2', 'start1': 'start2', 'end1': 'end2', 'chrom2': 'chrom1',
         'start2': 'start1', 'end2': 'end1'}, axis=1)
     
-    # Find Viterbi path through species2-centric HMM
+    # Find path through species2-centric HMM
     segs2b, segs1b, dirsb = find_path(df2, options.match_score, options.skip_penalty,
             options.break_penalty, options.translocation_penalty, options.max_skip)
     
@@ -1163,6 +1171,7 @@ def main(args):
                            options.gene_name1, options.gene_id1,
                            options.gene_name2, options.gene_id2,
                            options.exclude_chr, options.include_chr,
+                           options.mito1, options.mito2,
                            options.filt_files)
 
 if __name__ == '__main__':
