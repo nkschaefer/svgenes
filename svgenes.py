@@ -53,6 +53,8 @@ This is required to make plot-friendly data, but not otherwise.", required=False
     parser.add_argument("--enrichment", "-E", help="Provide a number of random samples for enrichment testing, \
 if you wish to test for overrepresentation of genes in inverted regions. e.g. 1000. Defalt = no enrichment testing.",
         required=False, default=None, type=int)
+    parser.add_argument("--filt_files", "-F", help="Write out separate files for each set of removed \
+genes, to attempt to rescue later", action='store_true')
     return parser.parse_args()
 
 """
@@ -959,7 +961,8 @@ def filter_annotations(outbase,
                        name_field2,
                        id_field2,
                        exclude_chr,
-                       include_chr):
+                       include_chr,
+                       filt_files=False):
     
     g1 = pr.PyRanges(gene_df.copy().drop(['chrom2', 'start2', 'end2'], axis=1)\
         .rename({"chrom1": "Chromosome", "start1": "Start", "end1": "End"}, axis=1))
@@ -991,9 +994,35 @@ def filter_annotations(outbase,
                                                       'chrom1': "chr1y",
                                                       'chrom2': "chr2y"
                                                       }, axis=1)
-    gkeep = set(gsmerge.loc[(gsmerge['id_x'] == gsmerge['id_y']) | 
-                            ((gsmerge['chr1x'] == gsmerge['chr1y']) &
-                              (gsmerge['chr2x'] == gsmerge['chr2y'])),'gene'].unique())
+
+    # Strict
+    gkeep = set(gsmerge.loc[(gsmerge['id_x'] == gsmerge['id_y']),'gene'].unique())
+    # Loose
+    #gkeep = set(gsmerge.loc[(gsmerge['id_x'] == gsmerge['id_y']) | 
+    #                        ((gsmerge['chr1x'] == gsmerge['chr1y']) &
+    #                          (gsmerge['chr2x'] == gsmerge['chr2y'])),'gene'].unique())
+    
+    # Map discarded genes to the ID of region on species 1 to which we expect them to belong
+    # (if treating species 1 as truth)
+    g2seg1 = {}
+    # Track all synteny tracks that are meant to contain genes from species2 that are getting
+    # discarded
+    segs1withgenes = set([])
+    # Output file for GTF entries from species2 expected to fall in synteny tracks above
+    segs1_gtf_out = {}
+    if filt_files:
+        for _, row in gsmerge.loc[~gsmerge['gene'].isin(gkeep),:].iterrows():
+            g2seg1[row['gene']] = row['id_x']
+            segs1withgenes.add(row['id_x'])
+        for seg_id in segs1withgenes:
+            outn1 = '{}.remap.segment.{}.bed'.format(outbase, seg_id)
+            outn2 = '{}.remap.segment.{}.gtf'.format(outbase, seg_id)
+            segs1_gtf_out[seg_id] = open(outn2, 'w')
+            # Write out BED segment
+            bed_seg = species1.loc[species1['id'] == seg_id,:].drop(['chrom1', 'start1', 'end1', 'orientation', 'id'], axis=1)
+            # Write out species2 expected segment in BED format
+            bed_seg.to_csv(outn1, sep='\t', header=False, index=False)
+
     g_all = set(gsmerge['gene'].unique())
     g_rm = g_all.difference(gkeep)
     print("Remove genes ({}):".format(len(g_rm)), file=sys.stderr)
@@ -1001,17 +1030,22 @@ def filter_annotations(outbase,
         print(g, file=sys.stderr)
     
     annobase1 = annofile1.split('/')[-1]
+    annoext1 = ""
     m = re.match(r'(.+)\.(gff|gff3|gtf)(.gz)?', annobase1)
     if m:
         annobase1 = m.group(1)
+        annoext1 = m.group(2)
     annobase2 = annofile2.split('/')[-1]
+    annoext2 = ""
     m = re.match(r'(.+)\.(gff|gff3|gtf)(.gz)?', annobase2)
     if m:
         annobase2 = m.group(1)
-
-    f1 = gzip.open('{}.{}.gz'.format(outbase, annobase1), 'wt')
-    f1r = gzip.open('{}.removed.{}.gz'.format(outbase, annobase1), 'wt')
+        annoext2 = m.group(2)
+    f1 = gzip.open('{}.{}.{}.gz'.format(outbase, annobase1, annoext1), 'wt')
+    f1r = gzip.open('{}.removed.{}.{}.gz'.format(outbase, annobase1, annoext1), 'wt')
+    f1rl = open('{}.removed.{}.genes'.format(outbase, annobase1), 'w')
     print("Filter annotation 1...", file=sys.stderr)
+    f1rm = set([])
     for entry in get_gz_lines2(annofile1, name_field1, id_field1, exclude_chr,
                               include_chr):
         if entry['id'] is not None and entry['id'] in gid1 and \
@@ -1019,12 +1053,18 @@ def filter_annotations(outbase,
                 print(entry['line'], file=f1)
         else:
             print(entry['line'], file=f1r)
+            f1rm.add(entry['name'])
     f1.close()
     f1r.close()
+    for rm in sorted(list(f1rm)):
+        print(rm, file=f1rl)
+    f1rl.close()
 
     print("Filter annotation 2...", file=sys.stderr)
-    f2 = gzip.open('{}.{}.gz'.format(outbase, annobase2), 'wt')
-    f2r = gzip.open('{}.removed.{}.gz'.format(outbase, annobase2), 'wt')
+    f2 = gzip.open('{}.{}.{}.gz'.format(outbase, annobase2, annoext2), 'wt')
+    f2r = gzip.open('{}.removed.{}.{}.gz'.format(outbase, annobase2, annoext2), 'wt')
+    f2rl = open('{}.removed.{}.genes'.format(outbase, annobase2), 'w')
+    f2rm = set([])
     for entry in get_gz_lines2(annofile2, name_field2, id_field2, exclude_chr,
                                include_chr):
         if entry['id'] is not None and entry['id'] in gid2 and \
@@ -1032,9 +1072,21 @@ def filter_annotations(outbase,
                 print(entry['line'], file=f2)
         else:
             print(entry['line'], file=f2r)
+            f2rm.add(entry['name'])
+            if filt_files and entry['name'] in g2seg1:
+                # Find which output file this belongs to
+                seg = g2seg1[entry['name']]
+                print(entry['line'], file=segs1_gtf_out[seg])
+            
+    if filt_files:
+        for seg in segs1_gtf_out:
+            segs1_gtf_out[seg].close()
+    for rm in sorted(list(f2rm)):
+        print(rm, file=f2rl)
 
     f2.close()
     f2r.close()
+    f2rl.close()
 
 def main(args):
     options = parse_args()
@@ -1105,7 +1157,8 @@ def main(args):
                        options.anno1, gid1, options.anno2, gid2,
                        options.gene_name1, options.gene_id1,
                        options.gene_name2, options.gene_id2,
-                       options.exclude_chr, options.include_chr)
+                       options.exclude_chr, options.include_chr,
+                       options.filt_files)
 
 if __name__ == '__main__':
     sys.exit(main(sys.argv))
